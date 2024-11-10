@@ -1,0 +1,7 @@
+FastAPI
+uvicorn
+asyncpg
+aiogram
+pydantic
+sqlalchemy
+faiss-cpu
