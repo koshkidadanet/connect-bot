@@ -1,23 +1,30 @@
-from sqlalchemy import Column, Integer, String, ForeignKey
+from sqlalchemy import Column, Integer, String, BigInteger, Text, ForeignKey, Enum
 from sqlalchemy.orm import relationship
+import enum
 from database import Base
 
-class User(Base):
-    __tablename__ = 'users'
+class MediaType(enum.Enum):
+    PHOTO = "photo"
+    VIDEO = "video"
+
+class TelegramUser(Base):
+    __tablename__ = 'telegram_users'
 
     id = Column(Integer, primary_key=True, index=True)
-    username = Column(String, unique=True, index=True)
-    email = Column(String, unique=True, index=True)
-    hashed_password = Column(String)
+    telegram_id = Column(BigInteger, unique=True, index=True)
+    name = Column(String)
+    age = Column(Integer)
+    about_me = Column(Text)
+    looking_for = Column(Text)
+    
+    media_files = relationship("UserMedia", back_populates="user", cascade="all, delete-orphan")
 
-    items = relationship("Item", back_populates="owner")
-
-class Item(Base):
-    __tablename__ = 'items'
+class UserMedia(Base):
+    __tablename__ = 'user_media'
 
     id = Column(Integer, primary_key=True, index=True)
-    title = Column(String, index=True)
-    description = Column(String, index=True)
-    owner_id = Column(Integer, ForeignKey('users.id'))
-
-    owner = relationship("User", back_populates="items")
+    user_id = Column(Integer, ForeignKey('telegram_users.id', ondelete='CASCADE'))
+    file_id = Column(String, nullable=False)  # Telegram file_id
+    media_type = Column(Enum(MediaType), nullable=False)
+    
+    user = relationship("TelegramUser", back_populates="media_files")

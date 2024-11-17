@@ -1,16 +1,32 @@
 from fastapi import FastAPI
 from database import engine, Base
-from models import User, Item
+from models import TelegramUser
+from sqlalchemy import text
 
 app = FastAPI()
 
-def create_tables():
+def manage_tables(drop_existing=False):
+    """
+    Управление таблицами базы данных.
+    drop_existing: если True, удаляет существующие таблицы перед созданием новых
+    """
     try:
+        if drop_existing:
+            with engine.connect() as connection:
+                # Удаляем старые таблицы
+                connection.execute(text("DROP TABLE IF EXISTS user_media CASCADE"))
+                connection.execute(text("DROP TABLE IF EXISTS telegram_users CASCADE"))
+                connection.commit()
+                print("Old tables dropped successfully")
+        
+        # Создаем таблицы из моделей
         Base.metadata.create_all(bind=engine)
+        print("Tables created successfully")
     except Exception as e:
-        print(f"Error creating tables: {e}")
+        print(f"Error during table operations: {e}")
 
-create_tables()
+# Раскомментируйте следующую строку для пересоздания таблиц
+manage_tables(drop_existing=True)
 
 @app.get("/")
 def read_root():
