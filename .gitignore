@@ -34,6 +34,7 @@ ENV/
 .DS_Store
 
 # Project specific
+media/
 *.log
 *.sqlite3
 *.db

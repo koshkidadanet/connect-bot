@@ -24,7 +24,7 @@ class UserMedia(Base):
 
     id = Column(Integer, primary_key=True, index=True)
     user_id = Column(Integer, ForeignKey('telegram_users.id', ondelete='CASCADE'))
-    file_id = Column(String, nullable=False)  # Telegram file_id
+    file_id = Column(String, nullable=True)  # Set nullable=True to allow NULL values
     media_type = Column(Enum(MediaType), nullable=False)
     
     user = relationship("TelegramUser", back_populates="media_files")
