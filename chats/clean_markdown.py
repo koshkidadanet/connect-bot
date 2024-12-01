@@ -6,7 +6,7 @@ def clean_markdown(file_path):
         content = file.read()
 
     # Remove all Python code blocks
-    cleaned_content = re.sub(r'```python[\s\S]*?```', '', content)
+    cleaned_content = re.sub(r'```[\s\S]*?```', '', content)
 
     # Create new file path
     directory, filename = os.path.split(file_path)
