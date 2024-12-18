@@ -1,4 +1,4 @@
-from sqlalchemy import Column, Integer, String, BigInteger, Text, ForeignKey, Enum
+from sqlalchemy import Column, Integer, String, BigInteger, Text, ForeignKey, Enum, Float
 from sqlalchemy.orm import relationship
 import enum
 from database import Base
@@ -28,3 +28,15 @@ class UserMedia(Base):
     media_type = Column(Enum(MediaType), nullable=False)
     
     user = relationship("TelegramUser", back_populates="media_files")
+
+class RankedProfiles(Base):
+    __tablename__ = 'ranked_profiles'
+
+    id = Column(Integer, primary_key=True)
+    user_id = Column(Integer, ForeignKey('telegram_users.id', ondelete='CASCADE'))
+    target_user_id = Column(Integer, ForeignKey('telegram_users.id', ondelete='CASCADE'))
+    rank = Column(Integer, nullable=False)  # Position in ranked list
+    similarity_score = Column(Float, nullable=False)  # Similarity score from ChromaDB
+    
+    user = relationship("TelegramUser", foreign_keys=[user_id])
+    target_user = relationship("TelegramUser", foreign_keys=[target_user_id])

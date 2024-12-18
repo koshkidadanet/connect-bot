@@ -6,7 +6,8 @@ def clean_markdown(file_path):
         content = file.read()
 
     # Remove all Python code blocks
-    cleaned_content = re.sub(r'```[\s\S]*?```', '', content)
+    cleaned_content = re.sub(r'```python[\s\S]*?```', '', content)
+    cleaned_content = re.sub(r'```[\s\S]*?```', '', cleaned_content)
 
     # Create new file path
     directory, filename = os.path.split(file_path)
@@ -17,4 +18,4 @@ def clean_markdown(file_path):
         file.write(cleaned_content)
 
 
-clean_markdown('D:\education\itmo\ponl\connect-bot\chats\sprint_2.1.md')
+clean_markdown('/home/koshkidadanet/My Files/connect-bot/chats/sprint_3.md')

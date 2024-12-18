@@ -167,78 +167,7 @@ async def set_commands():
     logger.info("Команды бота установлены")
 
 # ...existing main() and __main__ block...
-```
 
-The refactoring improves code organization and maintainability through:
-1. Centralized message templates
-2. Helper functions for common operations
-3. Context manager for database sessions
-4. Type hints for better code clarity
-5. Simplified media handling logic
-6. Consistent error handling
-
-Areas for future improvement:
-1. Move message templates to a separate configuration file
-2. Create separate modules for handlers, keyboards, and utilities
-3. Add unit tests for helper functions
-4. Implement rate limiting for media uploads
-5. Add input validation middleware
-
-Would you like me to elaborate on any of these changes or provide additional refactoring for specific parts of the code?
-
-Made changes.
-
-koshkidadanet: After a user attaches a photo to their profile and attempts to view it, the `/profile` command functions correctly, but the `Моя анкета` button does not respond. Ensure that clicking the `Моя анкета` button triggers the appropriate action in the bot.
-
-GitHub Copilot: The issue is in the media handling logic where we need to ensure consistent behavior between the `/profile` command and the "Моя анкета" button. Here's how to fix it:
-
-### [aiogram_bot.py](file:///d%3A/education/itmo/ponl/connect-bot/src/aiogram_bot.py)
-
-The main changes needed are in the `process_media` and `show_profile` handlers:
-
-
-
-# ...existing imports and setup code...
-
-async def handle_media_upload(message: types.Message, state: FSMContext, user: TelegramUser, db: SessionLocal):
-    if message.photo:
-        if await handle_photo_upload(message, user, db):
-            await state.clear()  # Clear state before showing profile
-            await handle_profile_display(message, user)
-    elif message.video:
-        if await handle_video_upload(message, user, db):
-            await state.clear()  # Clear state before showing profile
-            await handle_profile_display(message, user)
-
-@dp.message(RegistrationStates.waiting_for_media)
-async def process_media(message: types.Message, state: FSMContext):
-    if message.text == "Моя анкета":
-        with database_session() as db:
-            user = db.query(TelegramUser).filter(TelegramUser.telegram_id == message.from_user.id).first()
-            if user and user.media_files:
-                await state.clear()
-                await handle_profile_display(message, user)
-            else:
-                await message.reply(
-                    MESSAGES['continue_media'],
-                    reply_markup=get_profile_keyboard()
-                )
-        return
-    
-    # ...rest of existing process_media code...
-
-@dp.message(F.text == "Моя анкета")
-async def show_profile(message: types.Message, state: FSMContext):
-    current_state = await state.get_state()
-    if current_state == RegistrationStates.waiting_for_media:
-        # If in media upload state, handle through process_media
-        await process_media(message, state)
-    else:
-        # Otherwise use normal profile command
-        await cmd_profile(message, state=state)
-
-# ...rest of existing code...
-```
 
 Key changes made:
 1. Modified `handle_media_upload` to clear state and show profile after successful media upload
@@ -292,137 +221,7 @@ async def process_media(message: types.Message, state: FSMContext):
         return
 
     # ...rest of existing process_media code...
-```
 
-The changes:
-1. Added specific handling for "Оставить текущее" text
-2. Restored previously saved media files from state data
-3. Created new user profile with restored media
-4. Used handle_profile_display to show the completed profile
-
-This ensures that when users choose to keep their existing media, the profile is properly recreated with all original media files intact.
-
-Made changes.
-
-koshkidadanet: Now that the `MESSAGES` dictionary has been created, add all the messages that the bot will output to this dictionary. Currently, not all messages are included in the dictionary within the code.
-
-GitHub Copilot: I'll help add all remaining messages to the `MESSAGES` dictionary. Here's the solution:
-
-### [aiogram_bot.py](file:///d%3A/education/itmo/ponl/connect-bot/src/aiogram_bot.py)
-
-Add all remaining message strings to the MESSAGES dictionary and replace direct string usage with dictionary references.
-
-
-
-# ...existing imports...
-
-MESSAGES = {
-    # Existing messages...
-    'ask_name': "Привет! Давайте создадим вашу анкету. Пожалуйста, введите ваше имя.",
-    'ask_age': "Отлично! Теперь введите ваш возраст (число):",
-    'ask_about': "Расскажите немного о себе:",
-    'ask_looking': "Опишите, кого вы хотели бы найти:",
-    'ask_media': """Теперь добавьте фотографии или одно видео к вашей анкете.
-Вы можете добавить до 3 фотографий или одно видео.
-Когда закончите добавлять медиафайлы, нажмите кнопку 'Моя анкета'""",
-    'profile_actions': """Выберите действие:
-1. Заполнить анкету заново
-2. Удалить мою анкету""",
-    'profile_complete': "Ваша анкета готова!",
-    'invalid_age': "Пожалуйста, введите корректный возраст (от 18 до 100):",
-    'media_limit': "К анкете можно добавить либо до 3 фото, либо 1 видео.",
-    'continue_media': "Пожалуйста, отправьте фото или видео. Когда закончите добавлять медиафайлы, нажмите 'Моя анкета'",
-    
-    # New messages...
-    'video_photo_conflict': "Вы уже добавили видео. Нельзя добавлять фото к видео.",
-    'photo_added': "Фото добавлено! Вы можете добавить ещё {} фото или нажать 'Моя анкета' для завершения.",
-    'enter_name_again': "Пожалуйста, введите ваше имя заново:",
-    'profile_deleted': "Ваша анкета успешно удалена. Используйте /profile для создания новой.",
-    'no_profile': "У вас нет активной анкеты. Используйте /profile для создания анкеты.",
-    'keep_current': "Оставить текущий текст",
-    'bot_start': "Запуск бота...",
-    'bot_stop': "Бот остановлен",
-    'commands_set': "Команды бота установлены",
-    'token_missing': "Не установлена переменная окружения BOT_TOKEN"
-}
-
-# Replace existing logger messages
-logger.basicConfig(level=logging.INFO)
-logger = logging.getLogger(__name__)
-
-BOT_TOKEN = os.getenv('BOT_TOKEN')
-if not BOT_TOKEN:
-    logger.error(MESSAGES['token_missing'])
-    exit(1)
-
-# ...existing code...
-
-async def handle_photo_upload(message: types.Message, user: TelegramUser, db: SessionLocal) -> bool:
-    if any(media.media_type == MediaType.VIDEO for media in user.media_files):
-        await message.reply(MESSAGES['video_photo_conflict'])
-        return False
-
-    # ...existing code...
-
-    if photos_left > 0:
-        await message.reply(
-            MESSAGES['photo_added'].format(photos_left),
-            reply_markup=get_profile_keyboard()
-        )
-        return False
-    return True
-
-# ...existing code...
-
-@dp.message(RegistrationStates.waiting_for_about_me)
-async def process_about_me(message: types.Message, state: FSMContext):
-    user_data = await state.get_data()
-    old_looking_for = user_data.get('old_looking_for')
-    
-    if message.text == MESSAGES['keep_current']:
-        await state.update_data(about_me=user_data['old_about_me'])
-    else:
-        await state.update_data(about_me=message.text)
-    
-    await state.set_state(RegistrationStates.waiting_for_looking_for)
-    await message.reply(
-        MESSAGES['ask_looking'],
-        reply_markup=get_previous_value_keyboard(old_looking_for, MESSAGES['keep_current']) if old_looking_for else types.ReplyKeyboardRemove()
-    )
-
-# ...existing code...
-
-@dp.message(F.text == "2")
-async def delete_profile(message: types.Message):
-    with database_session() as db:
-        user = db.query(TelegramUser).filter(TelegramUser.telegram_id == message.from_user.id).first()
-        if user:
-            db.delete(user)
-            db.commit()
-            await message.reply(
-                MESSAGES['profile_deleted'],
-                reply_markup=types.ReplyKeyboardRemove()
-            )
-        else:
-            await message.reply(
-                MESSAGES['no_profile'],
-                reply_markup=types.ReplyKeyboardRemove()
-            )
-
-async def main():
-    logger.info(MESSAGES['bot_start'])
-    try:
-        await set_commands()
-        await dp.start_polling(bot)
-    except Exception as e:
-        logger.error(f"Ошибка при запуске бота: {e}")
-
-if __name__ == '__main__':
-    try:
-        asyncio.run(main())
-    except KeyboardInterrupt:
-        logger.info(MESSAGES['bot_stop'])
-```
 
 The changes:
 1. Added all remaining hardcoded strings to the MESSAGES dictionary
@@ -441,12 +240,7 @@ Made changes.
 koshkidadanet: Implement functionality that allows a user to view other users' profiles after creating their own profile, adhering to the following requirements:
  
 1. When viewing a profile, the list of actions should appear as follows:   
-```
-Выберите действие:
-1. Смотреть анкеты
-2. Заполнить анкету заново
-3. Удалить мою анкету
-```
+
 2. When selecting the "Смотреть анкеты" action, the user should be presented with another user's profile stored in the database.
 3. During the profile viewing process, a `Далее` button should appear, which, when clicked, displays the next profile.
 4. If the user has viewed all profiles in the database, profiles should start displaying in a loop.
@@ -570,29 +364,7 @@ async def cmd_profile(message: types.Message, state: FSMContext):
         await state.clear()
     
     # ...existing code...
-```
 
-This implementation:
-1. Adds a new state for viewing profiles
-2. Updates the profile actions keyboard with the new option
-3. Implements profile cycling functionality
-4. Handles media display for other users' profiles
-5. Maintains clean profile display without unnecessary messages
-6. Allows for future ranking implementation by modifying the query in `view_next_profile`
-7. Provides seamless navigation between viewing profiles and returning to own profile
-
-The code is structured to easily accommodate future enhancements like profile ranking algorithms by modifying the query in the `view_next_profile` function.
-
-Made changes.
-
-koshkidadanet: I received an error:
-`Telegram server says - Bad Request: text must be non-empty.`
-
-In the requirements, I stated that no text should be displayed at all after showing another user's profile. Do not display emojis, empty text, or words. Remove this empty text and ensure that only user profiles are displayed.
-
-If you have issues handling media groups when displaying other users' profiles, we can first display their media files and then the profile text.
-
-```
 Traceback (most recent call last):
   File "D:\education\itmo\ponl\connect-bot\.venv\Lib\site-packages\aiogram\dispatcher\dispatcher.py", line 309, in _process_update
     response = await self.feed_update(bot, update, **kwargs)
@@ -643,67 +415,7 @@ Traceback (most recent call last):
     await message.answer(reply_markup=get_next_profile_keyboard())
           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 TypeError: Message.answer() missing 1 required positional argument: 'text'
-```
 
-GitHub Copilot: Let's fix the issue by modifying how we handle profile viewing. We'll first send the media files (if any) and then send the profile text with the keyboard. Here's the improved solution:
-
-### [aiogram_bot.py](file:///d%3A/education/itmo/ponl/connect-bot/src/aiogram_bot.py)
-
-Modify the `send_profile_media` and `view_next_profile` functions to handle media and text separately:
-
-
-
-# ...existing code...
-
-async def send_profile_media(message: types.Message, user: TelegramUser, profile_text: str):
-    if not user.media_files:
-        await message.answer(profile_text, reply_markup=get_next_profile_keyboard())
-        return
-
-    # Send media first
-    if user.media_files[0].media_type == MediaType.VIDEO:
-        await message.answer_video(user.media_files[0].file_id)
-        await message.answer(profile_text, reply_markup=get_next_profile_keyboard())
-        return
-
-    media_group = [
-        types.InputMediaPhoto(media=media.file_id)
-        for media in user.media_files
-        if media.media_type == MediaType.PHOTO
-    ]
-    if media_group:
-        await message.answer_media_group(media_group)
-        await message.answer(profile_text, reply_markup=get_next_profile_keyboard())
-
-async def view_next_profile(message: types.Message, state: FSMContext):
-    with database_session() as db:
-        viewer_id = message.from_user.id
-        
-        data = await state.get_data()
-        current_index = data.get('current_profile_index', -1)
-        
-        profiles = db.query(TelegramUser).filter(
-            TelegramUser.telegram_id != viewer_id
-        ).all()
-        
-        if not profiles:
-            await message.answer(
-                MESSAGES['no_profiles'],
-                reply_markup=get_profile_actions_keyboard()
-            )
-            await state.clear()
-            return
-        
-        next_index = (current_index + 1) % len(profiles)
-        await state.update_data(current_profile_index=next_index)
-        
-        profile = profiles[next_index]
-        profile_text = format_profile_text(profile)
-        
-        await send_profile_media(message, profile, profile_text)
-
-# ...existing code...
-```
 
 The changes include:
 1. Removed the empty text message
@@ -824,35 +536,7 @@ def create_test_profiles():
 
 if __name__ == "__main__":
     create_test_profiles()
-```
 
-This script:
-1. Creates 4 test profiles with different combinations:
-   - Profile with 2 photos
-   - Profile with 1 video
-   - Profile with 3 photos (maximum)
-   - Profile without media
-2. Uses fake telegram_ids (100001-100004) to avoid conflicts
-3. Includes varied age ranges and interests
-4. Uses placeholder file_ids that you'll need to replace with real ones
-
-To get real file_ids:
-1. Send photos/videos to your bot
-2. Log or print the file_ids from the received messages
-3. Replace the placeholder file_ids in the script with real ones
-
-To use:
-1. Create the file in your project
-2. Replace placeholder file_ids with real ones you get from your bot
-3. Run the script: `python populate_test_data.py`
-
-Would you like me to provide a way to capture real file_ids from your bot to use in this script?
-
-Made changes.
-
-koshkidadanet: I encountered an error while viewing the profiles. If the issue is with an incorrect `file_id` in the `user_media` table, please explain how I can obtain the correct file_ids for the photos I need.
-
-```
 Traceback (most recent call last):
   File "D:\education\itmo\ponl\connect-bot\.venv\Lib\site-packages\aiogram\dispatcher\dispatcher.py", line 309, in _process_update
     response = await self.feed_update(bot, update, **kwargs)
@@ -918,67 +602,7 @@ Traceback (most recent call last):
   File "D:\education\itmo\ponl\connect-bot\.venv\Lib\site-packages\aiogram\client\session\base.py", line 120, in check_response
     raise TelegramBadRequest(method=method, message=description)
 aiogram.exceptions.TelegramBadRequest: Telegram server says - Bad Request: wrong remote file identifier specified: can't unserialize it. Wrong last symbol
-```
 
-GitHub Copilot: I'll explain how to create a helper script to get real file_ids from Telegram. Here's the solution:
-
-### [get_file_ids.py](file:///d%3A/education/itmo/ponl/connect-bot/src/get_file_ids.py)
-
-Create a new script that will help you obtain real file_ids from Telegram:
-
-
-
-from aiogram import Bot, Dispatcher, types, F
-import os
-import asyncio
-import json
-from datetime import datetime
-
-BOT_TOKEN = os.getenv('BOT_TOKEN')
-if not BOT_TOKEN:
-    print("Please set BOT_TOKEN environment variable")
-    exit(1)
-
-bot = Bot(token=BOT_TOKEN)
-dp = Dispatcher()
-
-file_ids = {
-    'photos': [],
-    'videos': []
-}
-
-@dp.message(F.photo)
-async def handle_photo(message: types.Message):
-    file_id = message.photo[-1].file_id
-    file_ids['photos'].append(file_id)
-    print(f"Received photo file_id: {file_id}")
-    await save_file_ids()
-
-@dp.message(F.video)
-async def handle_video(message: types.Message):
-    file_id = message.video.file_id
-    file_ids['videos'].append(file_id)
-    print(f"Received video file_id: {file_id}")
-    await save_file_ids()
-
-async def save_file_ids():
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    filename = f'file_ids_{timestamp}.json'
-    with open(filename, 'w', encoding='utf-8') as f:
-        json.dump(file_ids, f, indent=2, ensure_ascii=False)
-    print(f"File IDs saved to {filename}")
-
-async def main():
-    print("Bot started. Send photos and videos to get their file_ids...")
-    print("Press Ctrl+C to stop")
-    try:
-        await dp.start_polling(bot)
-    except KeyboardInterrupt:
-        print("\nBot stopped")
-
-if __name__ == "__main__":
-    asyncio.run(main())
-```
 
 To get the real file_ids:
 
@@ -1008,20 +632,285 @@ test_profiles = [
 ]
 
 # ...existing code...
+bash
+pip install chromadb transformers torch sentence-transformers
+
+(.venv) koshkidadanet@koshkidadanet:~/My Files/connect-bot$ "/home/koshkidadanet/My Files/connect-bot/.venv/bin/python" "/home/koshkidadanet/My Files/connect-bot/src/data_science.py"
+Traceback (most recent call last):
+  File "/home/koshkidadanet/My Files/connect-bot/src/data_science.py", line 125, in <module>
+    sync_users_once()
+  File "/home/koshkidadanet/My Files/connect-bot/src/data_science.py", line 116, in sync_users_once
+    sync_users_to_chroma()
+  File "/home/koshkidadanet/My Files/connect-bot/src/data_science.py", line 48, in sync_users_to_chroma
+    collection = get_or_create_collection()
+                 ^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/koshkidadanet/My Files/connect-bot/src/data_science.py", line 31, in get_or_create_collection
+    collection = client.get_collection(
+                 ^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/koshkidadanet/My Files/connect-bot/.venv/lib/python3.12/site-packages/chromadb/api/client.py", line 171, in get_collection
+    model = self._server.get_collection(
+            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/koshkidadanet/My Files/connect-bot/.venv/lib/python3.12/site-packages/chromadb/telemetry/opentelemetry/__init__.py", line 150, in wrapper
+    return f(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^
+  File "/home/koshkidadanet/My Files/connect-bot/.venv/lib/python3.12/site-packages/chromadb/api/segment.py", line 103, in wrapper
+    return self._rate_limit_enforcer.rate_limit(func)(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/koshkidadanet/My Files/connect-bot/.venv/lib/python3.12/site-packages/chromadb/rate_limit/simple_rate_limit/__init__.py", line 23, in wrapper
+    return func(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^
+  File "/home/koshkidadanet/My Files/connect-bot/.venv/lib/python3.12/site-packages/chromadb/api/segment.py", line 300, in get_collection
+    raise InvalidCollectionException(f"Collection {name} does not exist.")
+chromadb.errors.InvalidCollectionException: Collection user_profiles does not exist.
+
+(.venv) koshkidadanet@koshkidadanet:~/My Files/connect-bot$ "/home/koshkidadanet/My Files/connect-bot/.venv/bin/python" "/home/koshkidadanet/My Files/connect-bot/src/data_science.py"
+Traceback (most recent call last):
+  File "/home/koshkidadanet/My Files/connect-bot/src/data_science.py", line 32, in get_or_create_collection
+    collection = client.get_collection(
+                 ^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/koshkidadanet/My Files/connect-bot/.venv/lib/python3.12/site-packages/chromadb/api/client.py", line 171, in get_collection
+    model = self._server.get_collection(
+            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/koshkidadanet/My Files/connect-bot/.venv/lib/python3.12/site-packages/chromadb/telemetry/opentelemetry/__init__.py", line 150, in wrapper
+    return f(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^
+  File "/home/koshkidadanet/My Files/connect-bot/.venv/lib/python3.12/site-packages/chromadb/api/segment.py", line 103, in wrapper
+    return self._rate_limit_enforcer.rate_limit(func)(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/koshkidadanet/My Files/connect-bot/.venv/lib/python3.12/site-packages/chromadb/rate_limit/simple_rate_limit/__init__.py", line 23, in wrapper
+    return func(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^
+  File "/home/koshkidadanet/My Files/connect-bot/.venv/lib/python3.12/site-packages/chromadb/api/segment.py", line 300, in get_collection
+    raise InvalidCollectionException(f"Collection {name} does not exist.")
+chromadb.errors.InvalidCollectionException: Collection user_profiles does not exist.
+
+During handling of the above exception, another exception occurred:
+
+Traceback (most recent call last):
+  File "/home/koshkidadanet/My Files/connect-bot/src/data_science.py", line 127, in <module>
+    sync_users_once()
+  File "/home/koshkidadanet/My Files/connect-bot/src/data_science.py", line 118, in sync_users_once
+    sync_users_to_chroma()
+  File "/home/koshkidadanet/My Files/connect-bot/src/data_science.py", line 50, in sync_users_to_chroma
+    collection = get_or_create_collection()
+                 ^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/koshkidadanet/My Files/connect-bot/src/data_science.py", line 38, in get_or_create_collection
+    collection = client.create_collection(
+                 ^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/koshkidadanet/My Files/connect-bot/.venv/lib/python3.12/site-packages/chromadb/api/client.py", line 155, in create_collection
+    return Collection(
+           ^^^^^^^^^^^
+  File "/home/koshkidadanet/My Files/connect-bot/.venv/lib/python3.12/site-packages/chromadb/api/models/CollectionCommon.py", line 122, in __init__
+    validate_embedding_function(embedding_function)
+  File "/home/koshkidadanet/My Files/connect-bot/.venv/lib/python3.12/site-packages/chromadb/api/types.py", line 487, in validate_embedding_function
+    raise ValueError(
+ValueError: Expected EmbeddingFunction.__call__ to have the following signature: odict_keys(['self', 'input']), got odict_keys(['self', 'args', 'kwargs'])
+Please see https://docs.trychroma.com/guides/embeddings for details of the EmbeddingFunction interface.
+Please note the recent change to the EmbeddingFunction interface: https://docs.trychroma.com/deployment/migration#migration-to-0.4.16---november-7,-2023 
+
+(.venv) koshkidadanet@koshkidadanet:~/My Files/connect-bot$ "/home/koshkidadanet/My Files/connect-bot/.venv/bin/python" "/home/koshkidadanet/My Files/connect-bot/src/data_science.py"
+Traceback (most recent call last):
+  File "/home/koshkidadanet/My Files/connect-bot/.venv/lib/python3.12/site-packages/chromadb/api/models/CollectionCommon.py", line 90, in wrapper
+    return func(self, *args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/koshkidadanet/My Files/connect-bot/.venv/lib/python3.12/site-packages/chromadb/api/models/CollectionCommon.py", line 426, in _validate_and_prepare_delete_request
+    raise ValueError(
+ValueError: At least one of ids, where, or where_document must be provided
+
+During handling of the above exception, another exception occurred:
+
+Traceback (most recent call last):
+  File "/home/koshkidadanet/My Files/connect-bot/src/data_science.py", line 128, in <module>
+    sync_users_once()
+  File "/home/koshkidadanet/My Files/connect-bot/src/data_science.py", line 119, in sync_users_once
+    sync_users_to_chroma()
+  File "/home/koshkidadanet/My Files/connect-bot/src/data_science.py", line 70, in sync_users_to_chroma
+    collection.delete()
+  File "/home/koshkidadanet/My Files/connect-bot/.venv/lib/python3.12/site-packages/chromadb/api/models/Collection.py", line 371, in delete
+    delete_request = self._validate_and_prepare_delete_request(
+                     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/koshkidadanet/My Files/connect-bot/.venv/lib/python3.12/site-packages/chromadb/api/models/CollectionCommon.py", line 93, in wrapper
+    raise type(e)(msg).with_traceback(e.__traceback__)
+  File "/home/koshkidadanet/My Files/connect-bot/.venv/lib/python3.12/site-packages/chromadb/api/models/CollectionCommon.py", line 90, in wrapper
+    return func(self, *args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/koshkidadanet/My Files/connect-bot/.venv/lib/python3.12/site-packages/chromadb/api/models/CollectionCommon.py", line 426, in _validate_and_prepare_delete_request
+    raise ValueError(
+ValueError: At least one of ids, where, or where_document must be provided in delete.
+bash
+pip install chromadb sentence-transformers sqlalchemy
+bash
+python src/data_science.py
+
+Enter user ID to inspect embeddings (or press Enter to skip): 1
+
+Embeddings for user 1:
+Telegram ID: 123456789
+About Me embedding (first 5 dimensions):
+[0.123, -0.456, 0.789, -0.012, 0.345]
+
+Looking For embedding (first 5 dimensions):
+[-0.234, 0.567, -0.890, 0.123, -0.456]
+
+ChromaDB Collections Summary:
+About Me Collection: 4 entries
+Telegram IDs: [100001, 100003, 100002, 597695657]
+
+Looking For Collection: 4 entries
+Telegram IDs: [100001, 100003, 100002, 597695657]
+
+Enter user ID to inspect embeddings (or press Enter to skip): 100001              
+Error getting embeddings for user 100001: index 0 is out of bounds for axis 0 with size 0
+
+ERROR:aiogram.event:Cause exception while process update id=462262574 by bot id=8062876581
+ProgrammingError: (psycopg2.errors.UndefinedTable) relation "ranked_profiles" does not exist
+LINE 2: FROM ranked_profiles 
+             ^
+
+[SQL: SELECT ranked_profiles.id AS ranked_profiles_id, ranked_profiles.user_id AS ranked_profiles_user_id, ranked_profiles.target_user_id AS ranked_profiles_target_user_id, ranked_profiles.rank AS ranked_profiles_rank, ranked_profiles.similarity_score AS ranked_profiles_similarity_score 
+FROM ranked_profiles 
+WHERE ranked_profiles.user_id = %(user_id_1)s ORDER BY ranked_profiles.rank]
+[parameters: {'user_id_1': 8}]
+(Background on this error at: https://sqlalche.me/e/20/f405)
+Traceback (most recent call last):
+  File "/home/koshkidadanet/My Files/connect-bot/.venv/lib/python3.12/site-packages/sqlalchemy/engine/base.py", line 1967, in _exec_single_context
+    self.dialect.do_execute(
+  File "/home/koshkidadanet/My Files/connect-bot/.venv/lib/python3.12/site-packages/sqlalchemy/engine/default.py", line 941, in do_execute
+    cursor.execute(statement, parameters)
+psycopg2.errors.UndefinedTable: relation "ranked_profiles" does not exist
+LINE 2: FROM ranked_profiles 
+             ^
+
+
+The above exception was the direct cause of the following exception:
+
+Traceback (most recent call last):
+  File "/home/koshkidadanet/My Files/connect-bot/.venv/lib/python3.12/site-packages/aiogram/dispatcher/dispatcher.py", line 309, in _process_update
+    response = await self.feed_update(bot, update, **kwargs)
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/koshkidadanet/My Files/connect-bot/.venv/lib/python3.12/site-packages/aiogram/dispatcher/dispatcher.py", line 158, in feed_update
+    response = await self.update.wrap_outer_middleware(
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/koshkidadanet/My Files/connect-bot/.venv/lib/python3.12/site-packages/aiogram/dispatcher/middlewares/error.py", line 25, in __call__
+    return await handler(event, data)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/koshkidadanet/My Files/connect-bot/.venv/lib/python3.12/site-packages/aiogram/dispatcher/middlewares/user_context.py", line 56, in __call__
+    return await handler(event, data)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/koshkidadanet/My Files/connect-bot/.venv/lib/python3.12/site-packages/aiogram/fsm/middleware.py", line 42, in __call__
+    return await handler(event, data)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/koshkidadanet/My Files/connect-bot/.venv/lib/python3.12/site-packages/aiogram/dispatcher/event/telegram.py", line 121, in trigger
+    return await wrapped_inner(event, kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/koshkidadanet/My Files/connect-bot/.venv/lib/python3.12/site-packages/aiogram/dispatcher/event/handler.py", line 43, in call
+    return await wrapped()
+           ^^^^^^^^^^^^^^^
+  File "/home/koshkidadanet/My Files/connect-bot/.venv/lib/python3.12/site-packages/aiogram/dispatcher/dispatcher.py", line 276, in _listen_update
+    return await self.propagate_event(update_type=update_type, event=event, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/koshkidadanet/My Files/connect-bot/.venv/lib/python3.12/site-packages/aiogram/dispatcher/router.py", line 146, in propagate_event
+    return await observer.wrap_outer_middleware(_wrapped, event=event, data=kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/koshkidadanet/My Files/connect-bot/.venv/lib/python3.12/site-packages/aiogram/dispatcher/router.py", line 141, in _wrapped
+    return await self._propagate_event(
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/koshkidadanet/My Files/connect-bot/.venv/lib/python3.12/site-packages/aiogram/dispatcher/router.py", line 166, in _propagate_event
+    response = await observer.trigger(event, **kwargs)
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/koshkidadanet/My Files/connect-bot/.venv/lib/python3.12/site-packages/aiogram/dispatcher/event/telegram.py", line 121, in trigger
+    return await wrapped_inner(event, kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/koshkidadanet/My Files/connect-bot/.venv/lib/python3.12/site-packages/aiogram/dispatcher/event/handler.py", line 43, in call
+    return await wrapped()
+           ^^^^^^^^^^^^^^^
+  File "/home/koshkidadanet/My Files/connect-bot/src/aiogram_bot.py", line 398, in start_viewing_profiles
+    await view_next_profile(message, state)
+  File "/home/koshkidadanet/My Files/connect-bot/src/aiogram_bot.py", line 137, in view_next_profile
+    ).order_by(RankedProfiles.rank).all()
+                                    ^^^^^
+  File "/home/koshkidadanet/My Files/connect-bot/.venv/lib/python3.12/site-packages/sqlalchemy/orm/query.py", line 2673, in all
+    return self._iter().all()  # type: ignore
+           ^^^^^^^^^^^^
+  File "/home/koshkidadanet/My Files/connect-bot/.venv/lib/python3.12/site-packages/sqlalchemy/orm/query.py", line 2827, in _iter
+    result: Union[ScalarResult[_T], Result[_T]] = self.session.execute(
+                                                  ^^^^^^^^^^^^^^^^^^^^^
+  File "/home/koshkidadanet/My Files/connect-bot/.venv/lib/python3.12/site-packages/sqlalchemy/orm/session.py", line 2362, in execute
+    return self._execute_internal(
+           ^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/koshkidadanet/My Files/connect-bot/.venv/lib/python3.12/site-packages/sqlalchemy/orm/session.py", line 2247, in _execute_internal
+    result: Result[Any] = compile_state_cls.orm_execute_statement(
+                          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/koshkidadanet/My Files/connect-bot/.venv/lib/python3.12/site-packages/sqlalchemy/orm/context.py", line 305, in orm_execute_statement
+    result = conn.execute(
+             ^^^^^^^^^^^^^
+  File "/home/koshkidadanet/My Files/connect-bot/.venv/lib/python3.12/site-packages/sqlalchemy/engine/base.py", line 1418, in execute
+    return meth(
+           ^^^^^
+  File "/home/koshkidadanet/My Files/connect-bot/.venv/lib/python3.12/site-packages/sqlalchemy/sql/elements.py", line 515, in _execute_on_connection
+    return connection._execute_clauseelement(
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/koshkidadanet/My Files/connect-bot/.venv/lib/python3.12/site-packages/sqlalchemy/engine/base.py", line 1640, in _execute_clauseelement
+    ret = self._execute_context(
+          ^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/koshkidadanet/My Files/connect-bot/.venv/lib/python3.12/site-packages/sqlalchemy/engine/base.py", line 1846, in _execute_context
+    return self._exec_single_context(
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/koshkidadanet/My Files/connect-bot/.venv/lib/python3.12/site-packages/sqlalchemy/engine/base.py", line 1986, in _exec_single_context
+    self._handle_dbapi_exception(
+  File "/home/koshkidadanet/My Files/connect-bot/.venv/lib/python3.12/site-packages/sqlalchemy/engine/base.py", line 2355, in _handle_dbapi_exception
+    raise sqlalchemy_exception.with_traceback(exc_info[2]) from e
+  File "/home/koshkidadanet/My Files/connect-bot/.venv/lib/python3.12/site-packages/sqlalchemy/engine/base.py", line 1967, in _exec_single_context
+    self.dialect.do_execute(
+  File "/home/koshkidadanet/My Files/connect-bot/.venv/lib/python3.12/site-packages/sqlalchemy/engine/default.py", line 941, in do_execute
+    cursor.execute(statement, parameters)
+sqlalchemy.exc.ProgrammingError: (psycopg2.errors.UndefinedTable) relation "ranked_profiles" does not exist
+LINE 2: FROM ranked_profiles 
+             ^
+
+[SQL: SELECT ranked_profiles.id AS ranked_profiles_id, ranked_profiles.user_id AS ranked_profiles_user_id, ranked_profiles.target_user_id AS ranked_profiles_target_user_id, ranked_profiles.rank AS ranked_profiles_rank, ranked_profiles.similarity_score AS ranked_profiles_similarity_score 
+FROM ranked_profiles 
+WHERE ranked_profiles.user_id = %(user_id_1)s ORDER BY ranked_profiles.rank]
+[parameters: {'user_id_1': 8}]
+(Background on this error at: https://sqlalche.me/e/20/f405)
+bash
+python src/main.py
+bash
+python src/generate_profiles/create_test_profiles.py
+
+(.venv) koshkidadanet@koshkidadanet:~/My Files/connect-bot$ "/home/koshkidadanet/My Files/connect-bot/.venv/bin/python" "/home/koshkidadanet/My Files/connect-bot/src/data_science.py"
+Using device: cuda for embeddings generation
+
+ChromaDB Collections Summary:
+About Me Collection: 7 entries
+Telegram IDs: [100001, 100003, 100002, 597695657, 1077557225, 1077557225, 597695657]
+
+Looking For Collection: 7 entries
+Telegram IDs: [100001, 100003, 100002, 597695657, 1077557225, 1077557225, 597695657]
+
+Enter Telegram ID to inspect embeddings (or press Enter to skip): 
 ```
 
-Steps to use:
 
-1. Create and run `get_file_ids.py`
-2. Send the photos/videos you want to use to your bot
-3. Check the generated JSON file for the file_ids
-4. Copy those file_ids and replace the placeholder ones in `populate_test_data.py`
-5. Run `populate_test_data.py` to create test profiles with valid file_ids
+The duplication is happening because we're initializing the vector store and then immediately syncing with the database in the main block without cleaning up old entries. Here's how to fix it:
 
-This will ensure that your test profiles have valid file_ids that Telegram can recognize.
+### [data_science.py](file:///home/koshkidadanet/My%20Files/connect-bot/src/data_science.py)
 
-Important note: File IDs in Telegram are bot-specific, meaning they only work with the same bot that originally received the files. Make sure you're using the same bot for getting file_ids and running the main application.
+Add a cleanup method and modify initialization:
 
-Made changes.
+
+
+This change:
+1. Adds a `reset_collections` method to completely clear and recreate ChromaDB collections
+2. Modifies `sync_with_database` to reset collections before syncing
+3. Ensures no duplicates by starting with fresh collections each time you sync
+
+Now when you run `data_science.py`, it will:
+1. Delete existing collections
+2. Create fresh collections
+3. Populate them with current database data
+4. Show you the clean, deduplicated results
+
+This ensures that your ChromaDB collections exactly match your PostgreSQL database without any duplicates.
 
 Made changes.

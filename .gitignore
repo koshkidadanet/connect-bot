@@ -39,6 +39,7 @@ media/
 *.sqlite3
 *.db
 *.pid
+chroma_db/
 
 # PostgreSQL
 *.sql

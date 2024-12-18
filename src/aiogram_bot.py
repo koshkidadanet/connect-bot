@@ -1,14 +1,18 @@
+import os
+import asyncio
+import logging
+
 from aiogram import Bot, Dispatcher, types, F
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.filters import Command
 from contextlib import contextmanager
 from typing import Any
-import os
-import asyncio
+from dotenv import load_dotenv
 from database import SessionLocal
-from models import TelegramUser, UserMedia, MediaType
-import logging
+from models import TelegramUser, UserMedia, MediaType, RankedProfiles
+from data_science import vector_store
+
 
 MESSAGES = {
     'ask_name': "Привет! Давайте создадим вашу анкету. Пожалуйста, введите ваше имя.",
@@ -42,6 +46,7 @@ MESSAGES = {
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
+load_dotenv()
 BOT_TOKEN = os.getenv('BOT_TOKEN')
 if not BOT_TOKEN:
     logger.error(MESSAGES['token_missing'])
@@ -121,15 +126,17 @@ async def handle_profile_display(message: types.Message, user: TelegramUser):
 async def view_next_profile(message: types.Message, state: FSMContext):
     with database_session() as db:
         viewer_id = message.from_user.id
+        viewer = db.query(TelegramUser).filter(TelegramUser.telegram_id == viewer_id).first()
         
         data = await state.get_data()
         current_index = data.get('current_profile_index', -1)
         
-        profiles = db.query(TelegramUser).filter(
-            TelegramUser.telegram_id != viewer_id
-        ).all()
+        # Get ranked profiles
+        ranked_profiles = db.query(RankedProfiles).filter(
+            RankedProfiles.user_id == viewer.id
+        ).order_by(RankedProfiles.rank).all()
         
-        if not profiles:
+        if not ranked_profiles:
             await message.answer(
                 MESSAGES['no_profiles'],
                 reply_markup=get_profile_actions_keyboard()
@@ -137,10 +144,12 @@ async def view_next_profile(message: types.Message, state: FSMContext):
             await state.clear()
             return
         
-        next_index = (current_index + 1) % len(profiles)
+        next_index = (current_index + 1) % len(ranked_profiles)
         await state.update_data(current_profile_index=next_index)
         
-        profile = profiles[next_index]
+        # Get the target profile
+        ranked_profile = ranked_profiles[next_index]
+        profile = ranked_profile.target_user
         profile_text = format_profile_text(profile)
         
         await send_profile_media(message, profile, profile_text)
@@ -203,9 +212,12 @@ async def handle_video_upload(message: types.Message, user: TelegramUser, db: Se
 
 @dp.message(Command("profile"))
 async def cmd_profile(message: types.Message, state: FSMContext):
-    # Clear viewing state if exists
+    # Don't clear viewing state anymore, just pause it
     current_state = await state.get_state()
+    saved_data = None
+    
     if current_state == RegistrationStates.viewing_profiles:
+        saved_data = await state.get_data()
         await state.clear()
     
     with database_session() as db:
@@ -214,6 +226,7 @@ async def cmd_profile(message: types.Message, state: FSMContext):
         current_state = await state.get_state()
         if current_state == RegistrationStates.waiting_for_media:
             if user and user.media_files:
+                # Clear saved viewing position when profile is completed
                 await state.clear()
                 await message.reply(
                     MESSAGES['profile_complete'],
@@ -227,6 +240,9 @@ async def cmd_profile(message: types.Message, state: FSMContext):
                 )
         else:
             if user:
+                # Restore saved viewing state if it exists
+                if saved_data:
+                    await state.set_data(saved_data)
                 await handle_profile_display(message, user)
             else:
                 await message.reply(MESSAGES['ask_name'], reply_markup=types.ReplyKeyboardRemove())
@@ -324,6 +340,9 @@ async def process_media(message: types.Message, state: FSMContext):
                     db.add(media)
                 db.commit()
                 
+                # Update vector store
+                vector_store.handle_user_update(user)
+                
                 await state.clear()
                 await handle_profile_display(message, user)
         return
@@ -332,7 +351,10 @@ async def process_media(message: types.Message, state: FSMContext):
         with database_session() as db:
             user = db.query(TelegramUser).filter(TelegramUser.telegram_id == message.from_user.id).first()
             if user and user.media_files:
+                vector_store.handle_user_update(user)
                 await state.clear()
+                # Set flag for ranking update
+                await state.update_data(needs_ranking_update=True)
                 await handle_profile_display(message, user)
             else:
                 await message.reply(
@@ -356,7 +378,9 @@ async def process_media(message: types.Message, state: FSMContext):
             )
             db.add(user)
             db.flush()
-        
+            # Update vector store when new profile is created
+            vector_store.handle_user_update(user)
+            
         await handle_media_upload(message, state, user, db)
 
 @dp.message(F.text == "Моя анкета")
@@ -377,8 +401,21 @@ async def start_viewing_profiles(message: types.Message, state: FSMContext):
             await message.answer(MESSAGES['no_profile'])
             return
         
+        # Get existing state data
+        data = await state.get_data()
+        current_index = data.get('current_profile_index', -1)
+        needs_ranking_update = data.get('needs_ranking_update', True)
+        
+        # Update rankings only if needed
+        if needs_ranking_update:
+            vector_store.update_user_rankings(user)
+            current_index = -1  # Reset index when rankings are updated
+        
         await state.set_state(RegistrationStates.viewing_profiles)
-        await state.update_data(current_profile_index=-1)
+        await state.update_data(
+            current_profile_index=current_index,
+            needs_ranking_update=False
+        )
         await view_next_profile(message, state)
 
 @dp.message(F.text == "2")
@@ -396,13 +433,18 @@ async def refill_profile(message: types.Message, state: FSMContext):
                 old_about_me=user.about_me,
                 old_looking_for=user.looking_for,
                 has_media=bool(user.media_files),
-                old_media=media_data
+                old_media=media_data,
+                needs_ranking_update=True  # Set flag for ranking update
             )
             await message.reply(
                 MESSAGES['enter_name_again'],
                 reply_markup=get_previous_value_keyboard(user.name)
             )
             await state.set_state(RegistrationStates.waiting_for_name)
+            
+            # Delete from vector store before deleting from database
+            vector_store.handle_user_update(user, delete=True)
+            
             db.delete(user)
             db.commit()
 
@@ -411,6 +453,9 @@ async def delete_profile(message: types.Message):
     with database_session() as db:
         user = db.query(TelegramUser).filter(TelegramUser.telegram_id == message.from_user.id).first()
         if user:
+            # Delete from vector store before deleting from database
+            vector_store.handle_user_update(user, delete=True)
+            
             db.delete(user)
             db.commit()
             await message.reply(
