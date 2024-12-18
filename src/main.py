@@ -14,6 +14,7 @@ def manage_tables(drop_existing=False):
         if drop_existing:
             with engine.connect() as connection:
                 # Удаляем старые таблицы
+                connection.execute(text("DROP TABLE IF EXISTS ranked_profiles CASCADE"))
                 connection.execute(text("DROP TABLE IF EXISTS user_media CASCADE"))
                 connection.execute(text("DROP TABLE IF EXISTS telegram_users CASCADE"))
                 connection.commit()
