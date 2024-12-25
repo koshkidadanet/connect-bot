@@ -40,7 +40,8 @@ MESSAGES = {
     'bot_stop': "Бот остановлен",
     'commands_set': "Команды бота установлены",
     'token_missing': "Не установлена переменная окружения BOT_TOKEN",
-    'no_profiles': "К сожалению, пока нет других анкет для просмотра."
+    'no_profiles': "К сожалению, пока нет других анкет для просмотра.",
+    'profile_not_viewed': "Вы еще не долистали до анкеты под номером {}!"
 }
 
 logging.basicConfig(level=logging.INFO)
@@ -95,22 +96,33 @@ def format_profile_text(user: TelegramUser) -> str:
 В поисках:
 {user.looking_for}"""
 
-async def send_profile_media(message: types.Message, user: TelegramUser, profile_text: str):
+async def send_profile_media(message: types.Message, user: TelegramUser, profile_text: str, rank: int | None = None):
+    rank_text = f"/{rank}" if rank is not None else ""
+    
     if not user.media_files:
-        await message.answer(profile_text, reply_markup=get_next_profile_keyboard())
+        await message.answer(f"{rank_text}\n{profile_text}", reply_markup=get_next_profile_keyboard())
         return
 
-    # Send media first
+    # Send media with rank
     if user.media_files[0].media_type == MediaType.VIDEO:
-        await message.answer_video(user.media_files[0].file_id)
+        await message.answer_video(
+            user.media_files[0].file_id,
+            caption=rank_text
+        )
         await message.answer(profile_text, reply_markup=get_next_profile_keyboard())
         return
 
-    media_group = [
-        types.InputMediaPhoto(media=media.file_id)
-        for media in user.media_files
-        if media.media_type == MediaType.PHOTO
-    ]
+    media_group = []
+    for i, media in enumerate(user.media_files):
+        if media.media_type == MediaType.PHOTO:
+            caption = rank_text if i == 0 else None
+            media_group.append(
+                types.InputMediaPhoto(
+                    media=media.file_id,
+                    caption=caption
+                )
+            )
+    
     if media_group:
         await message.answer_media_group(media_group)
         await message.answer(profile_text, reply_markup=get_next_profile_keyboard())
@@ -130,6 +142,8 @@ async def view_next_profile(message: types.Message, state: FSMContext):
         
         data = await state.get_data()
         current_index = data.get('current_profile_index', -1)
+        skip_to_index = data.get('skip_to_index')
+        max_viewed_index = data.get('max_viewed_index', -1)
         
         # Get ranked profiles
         ranked_profiles = db.query(RankedProfiles).filter(
@@ -143,16 +157,63 @@ async def view_next_profile(message: types.Message, state: FSMContext):
             )
             await state.clear()
             return
+
+        if skip_to_index is not None:
+            next_index = skip_to_index
+            await state.update_data(skip_to_index=None)
+        else:
+            next_index = (current_index + 1) % len(ranked_profiles)
         
-        next_index = (current_index + 1) % len(ranked_profiles)
-        await state.update_data(current_profile_index=next_index)
+        # Update max viewed index
+        max_viewed_index = max(max_viewed_index, next_index)
+        await state.update_data(
+            current_profile_index=next_index,
+            max_viewed_index=max_viewed_index
+        )
         
         # Get the target profile
         ranked_profile = ranked_profiles[next_index]
         profile = ranked_profile.target_user
         profile_text = format_profile_text(profile)
         
-        await send_profile_media(message, profile, profile_text)
+        await send_profile_media(message, profile, profile_text, rank=next_index + 1)
+
+@dp.message(lambda message: message.text and message.text.startswith('/') and message.text[1:].isdigit())
+async def handle_rank_command(message: types.Message, state: FSMContext):
+    rank = int(message.text[1:]) - 1  # Convert to 0-based index
+    
+    # Check if user has viewed this profile
+    data = await state.get_data()
+    max_viewed_index = data.get('max_viewed_index', -1)
+    
+    if rank > max_viewed_index:
+        await message.answer(MESSAGES['profile_not_viewed'].format(rank + 1))
+        return
+    
+    with database_session() as db:
+        viewer_id = message.from_user.id
+        viewer = db.query(TelegramUser).filter(TelegramUser.telegram_id == viewer_id).first()
+        
+        if not viewer:
+            await message.answer(MESSAGES['no_profile'])
+            return
+        
+        # Get ranked profiles
+        ranked_profiles = db.query(RankedProfiles).filter(
+            RankedProfiles.user_id == viewer.id
+        ).order_by(RankedProfiles.rank).all()
+        
+        if not ranked_profiles or rank >= len(ranked_profiles):
+            await message.answer(MESSAGES['no_profiles'])
+            return
+        
+        # Set viewing state and show profile
+        await state.set_state(RegistrationStates.viewing_profiles)
+        await state.update_data(current_profile_index=rank)
+        
+        profile = ranked_profiles[rank].target_user
+        profile_text = format_profile_text(profile)
+        await send_profile_media(message, profile, profile_text, rank=rank + 1)
 
 def get_previous_value_keyboard(value: Any = None, text: str | None = None) -> types.ReplyKeyboardMarkup:
     if not value:
