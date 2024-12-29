@@ -11,9 +11,18 @@ import torch
 class VectorStore:
     def __init__(self, persist_directory: str = "chroma_db"):
         self.persist_directory = persist_directory
+        
+        # Configure client settings
+        settings = Settings(
+            anonymized_telemetry=False,
+            is_persistent=True,
+            persist_directory=persist_directory
+        )
+        
+        # Initialize persistent client with proper settings
         self.chroma_client = chromadb.PersistentClient(
             path=persist_directory,
-            settings=Settings(anonymized_telemetry=False)
+            settings=settings
         )
         
         # Initialize the embedding model with GPU support if available
@@ -21,7 +30,7 @@ class VectorStore:
         print(f"Using device: {device} for embeddings generation")
         self.model = SentenceTransformer('intfloat/multilingual-e5-small', device=device)
         
-        # Create or get collections for about_me and looking_for
+        # Get existing collections or create new ones
         self.about_collection = self.chroma_client.get_or_create_collection(
             name="about_me_vectors",
             metadata={"description": "User about_me embeddings"}
@@ -30,6 +39,7 @@ class VectorStore:
             name="looking_for_vectors",
             metadata={"description": "User looking_for embeddings"}
         )
+        print("Collections initialized successfully")
 
     def _get_embedding(self, text: str) -> List[float]:
         # Convert embedding to list and normalize
@@ -74,11 +84,15 @@ class VectorStore:
     def reset_collections(self) -> None:
         """Reset ChromaDB collections by deleting and recreating them"""
         try:
-            # Delete existing collections if they exist
-            self.chroma_client.delete_collection("about_me_vectors")
-            self.chroma_client.delete_collection("looking_for_vectors")
+            # Only delete if collections exist
+            try:
+                self.chroma_client.delete_collection("about_me_vectors")
+                self.chroma_client.delete_collection("looking_for_vectors")
+                print("Existing collections deleted")
+            except Exception as e:
+                print(f"No collections to delete: {e}")
             
-            # Recreate collections
+            # Create new collections
             self.about_collection = self.chroma_client.create_collection(
                 name="about_me_vectors",
                 metadata={"description": "User about_me embeddings"}
@@ -87,6 +101,7 @@ class VectorStore:
                 name="looking_for_vectors",
                 metadata={"description": "User looking_for embeddings"}
             )
+            print("New collections created")
         except Exception as e:
             print(f"Error resetting collections: {e}")
 
@@ -94,12 +109,37 @@ class VectorStore:
         """Synchronize vector store with the PostgreSQL database"""
         db = SessionLocal()
         try:
-            # Reset collections before syncing
-            self.reset_collections()
-            
+            # Get all users from database
             users = db.query(TelegramUser).all()
+            
+            # Get existing IDs in collections
+            existing_about_ids = set()
+            existing_looking_ids = set()
+            
+            try:
+                about_ids = self.about_collection.get()["ids"]
+                looking_ids = self.looking_collection.get()["ids"]
+                existing_about_ids = set(about_ids)
+                existing_looking_ids = set(looking_ids)
+            except Exception:
+                pass  # Collections might be empty
+            
+            # Update or add vectors for each user
             for user in users:
-                self.update_user_vectors(user)
+                user_id = str(user.id)
+                if user_id not in existing_about_ids or user_id not in existing_looking_ids:
+                    self.update_user_vectors(user)
+            
+            # Remove vectors for deleted users
+            current_user_ids = {str(user.id) for user in users}
+            about_to_delete = existing_about_ids - current_user_ids
+            looking_to_delete = existing_looking_ids - current_user_ids
+            
+            if about_to_delete:
+                self.about_collection.delete(ids=list(about_to_delete))
+            if looking_to_delete:
+                self.looking_collection.delete(ids=list(looking_to_delete))
+                
         finally:
             db.close()
 

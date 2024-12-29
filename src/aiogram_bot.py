@@ -41,8 +41,27 @@ MESSAGES = {
     'commands_set': "Команды бота установлены",
     'token_missing': "Не установлена переменная окружения BOT_TOKEN",
     'no_profiles': "К сожалению, пока нет других анкет для просмотра.",
-    'profile_not_viewed': "Вы еще не долистали до анкеты под номером {}!"
+    'profile_not_viewed': "Вы еще не долистали до анкеты под номером {}!",
+    'unsupported_media': "Извините, этот формат файла не поддерживается. Пожалуйста, отправьте сжатое фото или видео.",
+    'photo_too_large': "Фото слишком большое. Пожалуйста, отправьте фото размером до 3 МБ.",
+    'video_too_large': "Видео слишком большое. Пожалуйста, отправьте видео размером до 30 МБ.",
+    'video_too_long': "Видео слишком длинное. Пожалуйста, отправьте видео длительностью до 15 секунд.",
+    'welcome': """Привет! Я ConnectBot - бот, который поможет найти интересных собеседников 💙
+
+Как это работает:
+1️⃣ Введите команду /profile чтобы создать анкету
+2️⃣ Я подберу вам анкеты, которые лучше всего подходят под ваше описание
+3️⃣ Вы всегда можете вернуться к пропущенным анкетам, используя команды вида /1, /2 и т.д.
+
+Давайте начнем! 🚀""",
+    'photo_limit_reached': "Достигнут лимит фотографий.",
+    'photos_done': "Фото добавлено! Нажмите 'Моя анкета' для завершения."
 }
+
+# Add constants for media restrictions
+MAX_PHOTO_SIZE = 3 * 1024 * 1024  # 3 MB in bytes
+MAX_VIDEO_SIZE = 30 * 1024 * 1024  # 30 MB in bytes
+MAX_VIDEO_DURATION = 15  # seconds
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -80,6 +99,10 @@ def get_profile_actions_keyboard():
 
 def get_next_profile_keyboard():
     keyboard = [[types.KeyboardButton(text="Далее")]]
+    return types.ReplyKeyboardMarkup(keyboard=keyboard, resize_keyboard=True)
+
+def get_start_keyboard():
+    keyboard = [[types.KeyboardButton(text="Моя анкета")]]
     return types.ReplyKeyboardMarkup(keyboard=keyboard, resize_keyboard=True)
 
 @contextmanager
@@ -222,23 +245,46 @@ def get_previous_value_keyboard(value: Any = None, text: str | None = None) -> t
     return types.ReplyKeyboardMarkup(keyboard=keyboard, resize_keyboard=True)
 
 async def handle_media_upload(message: types.Message, state: FSMContext, user: TelegramUser, db: SessionLocal):
+    # Check if we've already reached the photo limit in this session
+    state_data = await state.get_data()
+    if state_data.get('photo_limit_reached'):
+        await message.reply(MESSAGES['photo_limit_reached'])
+        return
+
+    # Check if message contains supported media type
+    if not (message.photo or message.video):
+        await message.reply(MESSAGES['unsupported_media'])
+        return
+
     if message.photo:
-        if await handle_photo_upload(message, user, db):
-            await state.clear()  # Clear state before showing profile
-            await handle_profile_display(message, user)
+        photo_limit_reached = await handle_photo_upload(message, user, db)
+        if photo_limit_reached:
+            # Just mark that we've reached the limit in this session
+            await state.update_data(photo_limit_reached=True)
     elif message.video:
         if await handle_video_upload(message, user, db):
             await state.clear()  # Clear state before showing profile
             await handle_profile_display(message, user)
 
 async def handle_photo_upload(message: types.Message, user: TelegramUser, db: SessionLocal) -> bool:
+    # First check if photo limit is reached
+    photo_count = sum(1 for media in user.media_files if media.media_type == MediaType.PHOTO)
+    if photo_count >= 3:
+        await message.reply(
+            MESSAGES['photo_limit_reached'],
+            reply_markup=get_profile_keyboard()
+        )
+        return True
+
+    # Check photo size
+    photo = message.photo[-1]
+    if photo.file_size > MAX_PHOTO_SIZE:
+        await message.reply(MESSAGES['photo_too_large'])
+        return False
+
     if any(media.media_type == MediaType.VIDEO for media in user.media_files):
         await message.reply(MESSAGES['video_photo_conflict'])
         return False
-
-    photo_count = sum(1 for media in user.media_files if media.media_type == MediaType.PHOTO)
-    if photo_count >= 3:
-        return True
 
     media = UserMedia(
         user_id=user.id,
@@ -248,18 +294,38 @@ async def handle_photo_upload(message: types.Message, user: TelegramUser, db: Se
     db.add(media)
     db.commit()
 
-    photos_left = 3 - (photo_count + 1)
+    photos_left = 2 - photo_count  # Now we subtract from 2 since we just added one
     if photos_left > 0:
         await message.reply(
             MESSAGES['photo_added'].format(photos_left),
             reply_markup=get_profile_keyboard()
         )
         return False
-    return True
+    else:
+        await message.reply(
+            MESSAGES['photos_done'],
+            reply_markup=get_profile_keyboard()
+        )
+        return True
 
 async def handle_video_upload(message: types.Message, user: TelegramUser, db: SessionLocal) -> bool:
+    # First check if user already has photos
+    if any(media.media_type == MediaType.PHOTO for media in user.media_files):
+        await message.reply(MESSAGES['video_photo_conflict'])
+        return False
+
+    # Then check for existing media
     if user.media_files:
         await message.reply(MESSAGES['media_limit'])
+        return False
+
+    # Finally check video parameters
+    if message.video.file_size > MAX_VIDEO_SIZE:
+        await message.reply(MESSAGES['video_too_large'])
+        return False
+    
+    if message.video.duration > MAX_VIDEO_DURATION:
+        await message.reply(MESSAGES['video_too_long'])
         return False
 
     media = UserMedia(
@@ -287,7 +353,6 @@ async def cmd_profile(message: types.Message, state: FSMContext):
         current_state = await state.get_state()
         if current_state == RegistrationStates.waiting_for_media:
             if user and user.media_files:
-                # Clear saved viewing position when profile is completed
                 await state.clear()
                 await message.reply(
                     MESSAGES['profile_complete'],
@@ -295,13 +360,14 @@ async def cmd_profile(message: types.Message, state: FSMContext):
                 )
                 await handle_profile_display(message, user)
             else:
+                # Reset photo limit flag when starting new media upload session
+                await state.update_data(photo_limit_reached=False)
                 await message.reply(
                     MESSAGES['continue_media'],
                     reply_markup=get_profile_keyboard()
                 )
         else:
             if user:
-                # Restore saved viewing state if it exists
                 if saved_data:
                     await state.set_data(saved_data)
                 await handle_profile_display(message, user)
@@ -424,6 +490,11 @@ async def process_media(message: types.Message, state: FSMContext):
                 )
         return
     
+    # Handle unsupported media types
+    if not (message.photo or message.video or message.text):
+        await message.reply(MESSAGES['unsupported_media'])
+        return
+    
     user_data = await state.get_data()
     
     with database_session() as db:
@@ -439,10 +510,15 @@ async def process_media(message: types.Message, state: FSMContext):
             )
             db.add(user)
             db.flush()
-            # Update vector store when new profile is created
-            vector_store.handle_user_update(user)
+            db.refresh(user)  # Ensure we have the user's ID
             
-        await handle_media_upload(message, state, user, db)
+        if message.photo or message.video:
+            await handle_media_upload(message, state, user, db)
+        else:
+            await message.reply(
+                MESSAGES['continue_media'],
+                reply_markup=get_profile_keyboard()
+            )
 
 @dp.message(F.text == "Моя анкета")
 async def show_profile(message: types.Message, state: FSMContext):
@@ -534,9 +610,18 @@ async def handle_next_profile(message: types.Message, state: FSMContext):
     await view_next_profile(message, state)
 
 async def set_commands():
-    commands = [types.BotCommand(command="profile", description="📝 Моя анкета")]
+    commands = [
+        types.BotCommand(command="profile", description="📝 Моя анкета")
+    ]
     await bot.set_my_commands(commands)
     logger.info(MESSAGES['commands_set'])
+
+@dp.message(Command("start"))
+async def cmd_start(message: types.Message):
+    await message.answer(
+        MESSAGES['welcome'],
+        reply_markup=get_start_keyboard()
+    )
 
 async def main():
     logger.info(MESSAGES['bot_start'])
