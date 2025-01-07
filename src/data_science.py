@@ -105,6 +105,29 @@ class VectorStore:
         except Exception as e:
             print(f"Error resetting collections: {e}")
 
+    def _content_changed(self, user: TelegramUser, user_id: str) -> bool:
+        """Check if user's content has changed from what's stored in vectors"""
+        try:
+            # Get current vectors
+            about_results = self.about_collection.get(
+                ids=[user_id],
+                include=["embeddings"]
+            )
+            looking_results = self.looking_collection.get(
+                ids=[user_id],
+                include=["embeddings"]
+            )
+            
+            # Generate new embeddings
+            new_about_embedding = self._get_embedding(user.about_me)
+            new_looking_embedding = self._get_embedding(user.looking_for)
+            
+            # Compare embeddings
+            return (not np.allclose(about_results["embeddings"][0], new_about_embedding) or
+                    not np.allclose(looking_results["embeddings"][0], new_looking_embedding))
+        except Exception:
+            return True  # If we can't get current vectors, assume content changed
+
     def sync_with_database(self) -> None:
         """Synchronize vector store with the PostgreSQL database"""
         db = SessionLocal()
@@ -127,7 +150,9 @@ class VectorStore:
             # Update or add vectors for each user
             for user in users:
                 user_id = str(user.id)
-                if user_id not in existing_about_ids or user_id not in existing_looking_ids:
+                if (user_id not in existing_about_ids or 
+                    user_id not in existing_looking_ids or 
+                    self._content_changed(user, user_id)):
                     self.update_user_vectors(user)
             
             # Remove vectors for deleted users
@@ -281,7 +306,6 @@ class VectorStore:
                     'rank': idx,
                     'similarity_score': 1.0 - distance  # Convert distance to similarity
                 })
-        
         return ranked_profiles
 
     def update_user_rankings(self, user: TelegramUser) -> None:
