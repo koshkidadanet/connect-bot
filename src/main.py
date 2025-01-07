@@ -1,6 +1,5 @@
 from fastapi import FastAPI
 from database import engine, Base
-from models import TelegramUser
 from sqlalchemy import text
 
 app = FastAPI()
@@ -17,6 +16,10 @@ def manage_tables(drop_existing=False):
                 connection.execute(text("DROP TABLE IF EXISTS ranked_profiles CASCADE"))
                 connection.execute(text("DROP TABLE IF EXISTS user_media CASCADE"))
                 connection.execute(text("DROP TABLE IF EXISTS telegram_users CASCADE"))
+                
+                # Or alternatively, add column if table exists
+                # connection.execute(text("ALTER TABLE telegram_users ADD COLUMN IF NOT EXISTS username VARCHAR"))
+                
                 connection.commit()
                 print("Old tables dropped successfully")
         
