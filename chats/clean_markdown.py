@@ -18,4 +18,4 @@ def clean_markdown(file_path):
         file.write(cleaned_content)
 
 
-clean_markdown('/home/koshkidadanet/My Files/connect-bot/chats/sprint_5.md')
+clean_markdown('/home/koshkidadanet/My Files/connect-bot/chats/sprint_6.md')
