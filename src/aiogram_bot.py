@@ -1,6 +1,9 @@
 import os
 import asyncio
 import logging
+import time
+from collections import defaultdict
+from typing import Dict, Tuple
 
 from aiogram import Bot, Dispatcher, types, F
 from aiogram.fsm.context import FSMContext
@@ -23,8 +26,9 @@ MESSAGES = {
 Когда закончите добавлять медиафайлы, нажмите кнопку 'Моя анкета'""",
     'profile_actions': """Выберите действие:
 1. Смотреть анкеты
-2. Заполнить анкету заново
-3. Удалить мою анкету""",
+2. Мои лайки
+3. Заполнить анкету заново
+4. Удалить мою анкету""",
     'profile_complete': "Ваша анкета готова!",
     'invalid_age': "Пожалуйста, введите корректный возраст (от 18 до 100):",
     'media_limit': "К анкете можно добавить либо до 3 фото, либо 1 видео.",
@@ -79,6 +83,41 @@ if not BOT_TOKEN:
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher()
 
+class RateLimiter:
+    def __init__(self, rate_limit: float = 0.5):  # 0.5 second default rate limit
+        self.rate_limit = rate_limit
+        self.last_request: Dict[int, float] = defaultdict(float)
+    
+    def is_allowed(self, user_id: int) -> Tuple[bool, float]:
+        current_time = time.time()
+        last_request_time = self.last_request[user_id]
+        time_passed = current_time - last_request_time
+        
+        if time_passed >= self.rate_limit:
+            self.last_request[user_id] = current_time
+            return True, 0
+        
+        return False, self.rate_limit - time_passed
+
+# Create a global rate limiter instance
+rate_limiter = RateLimiter()
+
+async def rate_limit_handler(message: types.Message, handler_func):
+    """Wrapper for handling rate limits"""
+    user_id = message.from_user.id
+    allowed, wait_time = rate_limiter.is_allowed(user_id)
+    
+    if not allowed:
+        # Silently ignore the request if it's too soon
+        return
+    
+    try:
+        return await handler_func()
+    except Exception as e:
+        logger.error(f"Error in rate-limited handler: {e}")
+        # Optionally notify user about the error
+        # await message.answer("Something went wrong. Please try again.")
+
 class RegistrationStates(StatesGroup):
     waiting_for_name = State()
     waiting_for_age = State()
@@ -97,7 +136,8 @@ def get_profile_actions_keyboard():
         [
             types.KeyboardButton(text="1"),
             types.KeyboardButton(text="2"),
-            types.KeyboardButton(text="3")
+            types.KeyboardButton(text="3"),
+            types.KeyboardButton(text="4")
         ]
     ]
     return types.ReplyKeyboardMarkup(keyboard=keyboard, resize_keyboard=True)
@@ -478,14 +518,15 @@ async def process_media(message: types.Message, state: FSMContext):
         with database_session() as db:
             user = TelegramUser(
                 telegram_id=message.from_user.id,
-                username=message.from_user.username,  # Add username
+                username=message.from_user.username,
                 name=user_data['name'],
                 age=user_data['age'],
-                about_me=user_data['about_me'],
-                looking_for=user_data['looking_for']
+                # Fix: Use the new values if provided, otherwise use old values
+                about_me=user_data.get('about_me', user_data['old_about_me']),
+                looking_for=user_data.get('looking_for', user_data['old_looking_for'])
             )
             db.add(user)
-            db.flush()  # Get user.id before adding media
+            db.flush()
 
             # Restore old media files
             if old_media := user_data.get('old_media'):
@@ -496,12 +537,12 @@ async def process_media(message: types.Message, state: FSMContext):
                         media_type=media_item['media_type']
                     )
                     db.add(media)
-                db.commit()
-                
-                # Add user to vector store after restoring media
-                vector_store.update_user_vectors(user)
-                await state.clear()
-                await handle_profile_display(message, user)
+            db.commit()
+            
+            # Add user to vector store after restoring media
+            vector_store.update_user_vectors(user)
+            await state.clear()
+            await handle_profile_display(message, user)
         return
 
     if message.text == "Моя анкета":
@@ -510,8 +551,13 @@ async def process_media(message: types.Message, state: FSMContext):
             if user and user.media_files:
                 # Add user to vector store when completing profile
                 vector_store.update_user_vectors(user)
-                # Update rankings for the user
-                vector_store.update_user_rankings(user)
+                
+                # Update rankings for all users when a new profile is created
+                all_users = db.query(TelegramUser).all()
+                for other_user in all_users:
+                    if other_user.id != user.id:
+                        vector_store.update_user_rankings(other_user)
+                
                 await state.clear()
                 await handle_profile_display(message, user)
             else:
@@ -534,7 +580,7 @@ async def process_media(message: types.Message, state: FSMContext):
         if not user:
             user = TelegramUser(
                 telegram_id=message.from_user.id,
-                username=message.from_user.username,  # Add username
+                username=message.from_user.username,
                 name=user_data['name'],
                 age=user_data['age'],
                 about_me=user_data['about_me'],
@@ -544,11 +590,17 @@ async def process_media(message: types.Message, state: FSMContext):
             db.flush()
             db.refresh(user)  # Ensure we have the user's ID
             
+            # Add new user to vector store immediately after creation
+            vector_store.update_user_vectors(user)
+            
         if message.photo or message.video:
             completed = await handle_media_upload(message, state, user, db)
             if completed:
-                # Add new profile to vector store when media upload is complete
-                vector_store.update_user_vectors(user)
+                # Update rankings for all users when profile is complete
+                all_users = db.query(TelegramUser).all()
+                for other_user in all_users:
+                    if other_user.id != user.id:
+                        vector_store.update_user_rankings(other_user)
         else:
             await message.reply(
                 MESSAGES['continue_media'],
@@ -580,8 +632,9 @@ async def start_viewing_profiles(message: types.Message, state: FSMContext):
         await state.update_data(current_profile_index=-1)  # Reset index when starting to view
         await view_next_profile(message, state)
 
-@dp.message(F.text == "2")
+@dp.message(F.text == "3")
 async def refill_profile(message: types.Message, state: FSMContext):
+    # This was previously "2", now it's "3"
     with database_session() as db:
         user = db.query(TelegramUser).filter(TelegramUser.telegram_id == message.from_user.id).first()
         if user:
@@ -610,8 +663,9 @@ async def refill_profile(message: types.Message, state: FSMContext):
             db.delete(user)
             db.commit()
 
-@dp.message(F.text == "3")
+@dp.message(F.text == "4")
 async def delete_profile(message: types.Message):
+    # This was previously "3", now it's "4"
     with database_session() as db:
         user = db.query(TelegramUser).filter(TelegramUser.telegram_id == message.from_user.id).first()
         if user:
@@ -632,7 +686,10 @@ async def delete_profile(message: types.Message):
 
 @dp.message(RegistrationStates.viewing_profiles, F.text == "👎")
 async def handle_next_profile(message: types.Message, state: FSMContext):
-    await view_next_profile(message, state)
+    async def handle():
+        await view_next_profile(message, state)
+    
+    await rate_limit_handler(message, handle)
 
 async def notify_about_like(bot: Bot, user_id: int, likes_count: int):
     """Notify user about new like"""
@@ -771,73 +828,83 @@ async def view_next_like(message: types.Message, state: FSMContext):
 
 @dp.message(RegistrationStates.viewing_likes, F.text == "❤️")
 async def handle_like_in_likes_view(message: types.Message, state: FSMContext):
-    with database_session() as db:
-        viewer = db.query(TelegramUser).filter(TelegramUser.telegram_id == message.from_user.id).first()
-        if not viewer:
-            return
+    async def handle():
+        with database_session() as db:
+            viewer = db.query(TelegramUser).filter(TelegramUser.telegram_id == message.from_user.id).first()
+            if not viewer:
+                return
 
-        data = await state.get_data()
-        current_like_index = data.get('current_like_index', -1)
-        unviewed_likes_ids = data.get('unviewed_likes_ids', [])
-        
-        if not unviewed_likes_ids or current_like_index >= len(unviewed_likes_ids):
-            return
-
-        # Get the specific like by ID
-        like = db.query(Likes).filter(Likes.id == unviewed_likes_ids[current_like_index]).first()
-        if not like:
-            return
-
-        from_user = db.query(TelegramUser).filter(TelegramUser.id == like.from_user_id).first()
-        if not from_user:
-            return
-
-        # Check for existing mutual like
-        existing_mutual = db.query(Likes).filter(
-            Likes.from_user_id == viewer.id,
-            Likes.to_user_id == from_user.id,
-            Likes.is_mutual == True
-        ).first()
-
-        profile_link = get_user_profile_link(from_user)
-        if existing_mutual or like.is_mutual:
-            # If already mutual, just show the mutual like message
-            await message.answer(
-                MESSAGES['mutual_like'].format(profile_link),
-                parse_mode="HTML",
-                disable_web_page_preview=True
-            )
-        else:
-            # Handle new mutual like
-            like.is_mutual = True
+            data = await state.get_data()
+            current_like_index = data.get('current_like_index', -1)
+            unviewed_likes_ids = data.get('unviewed_likes_ids', [])
             
-            # Create reciprocal like
-            reciprocal_like = Likes(
-                from_user_id=viewer.id,
-                to_user_id=like.from_user_id,
-                is_mutual=True,
-                viewed=False
-            )
-            db.add(reciprocal_like)
-            db.commit()
+            if not unviewed_likes_ids or current_like_index >= len(unviewed_likes_ids):
+                return
 
-            await message.answer(
-                MESSAGES['mutual_like'].format(profile_link),
-                parse_mode="HTML",
-                disable_web_page_preview=True
-            )
-            
-            # Count unviewed likes for the other user
-            unviewed_likes_count = db.query(Likes).filter(
+            # Get the specific like by ID
+            like = db.query(Likes).filter(Likes.id == unviewed_likes_ids[current_like_index]).first()
+            if not like:
+                return
+
+            from_user = db.query(TelegramUser).filter(TelegramUser.id == like.from_user_id).first()
+            if not from_user:
+                return
+
+            # Check for existing mutual like
+            existing_mutual = db.query(Likes).filter(
+                Likes.from_user_id == viewer.id,
                 Likes.to_user_id == from_user.id,
-                Likes.viewed == False
-            ).count()
-            
-            # Notify the other user about the mutual like
-            await notify_about_like(bot, from_user.telegram_id, unviewed_likes_count)
+                Likes.is_mutual == True
+            ).first()
 
-        # Show next profile or finish
+            profile_link = get_user_profile_link(from_user)
+            if existing_mutual or like.is_mutual:
+                # If already mutual, just show the mutual like message
+                await message.answer(
+                    MESSAGES['mutual_like'].format(profile_link),
+                    parse_mode="HTML",
+                    disable_web_page_preview=True
+                )
+            else:
+                # Handle new mutual like
+                like.is_mutual = True
+                
+                # Create reciprocal like
+                reciprocal_like = Likes(
+                    from_user_id=viewer.id,
+                    to_user_id=like.from_user_id,
+                    is_mutual=True,
+                    viewed=False
+                )
+                db.add(reciprocal_like)
+                db.commit()
+
+                await message.answer(
+                    MESSAGES['mutual_like'].format(profile_link),
+                    parse_mode="HTML",
+                    disable_web_page_preview=True
+                )
+                
+                # Count unviewed likes for the other user
+                unviewed_likes_count = db.query(Likes).filter(
+                    Likes.to_user_id == from_user.id,
+                    Likes.viewed == False
+                ).count()
+                
+                # Notify the other user about the mutual like
+                await notify_about_like(bot, from_user.telegram_id, unviewed_likes_count)
+
+            # Show next profile or finish
+            await view_next_like(message, state)
+    
+    await rate_limit_handler(message, handle)
+
+@dp.message(RegistrationStates.viewing_likes, F.text == "👎")
+async def handle_dislike_in_likes_view(message: types.Message, state: FSMContext):
+    async def handle():
         await view_next_like(message, state)
+    
+    await rate_limit_handler(message, handle)
 
 @dp.message(F.text == "1")
 async def handle_view_profiles(message: types.Message, state: FSMContext):
@@ -849,42 +916,41 @@ async def handle_view_profiles(message: types.Message, state: FSMContext):
         await start_viewing_profiles(message, state)
 
 @dp.message(F.text == "2")
-async def handle_my_profile(message: types.Message, state: FSMContext):
-    current_state = await state.get_state()
-    if current_state == RegistrationStates.viewing_likes:
-        await cmd_profile(message, state)
-    else:
-        # Handle existing "2" button functionality
-        await refill_profile(message, state)
+async def view_my_likes(message: types.Message, state: FSMContext):
+    # New handler for "Мои лайки" option
+    await start_viewing_likes(message, state)
 
 @dp.message(RegistrationStates.viewing_profiles, F.text == "❤️")
 async def handle_like_profile(message: types.Message, state: FSMContext):
-    with database_session() as db:
-        # Get current viewer
-        viewer = db.query(TelegramUser).filter(TelegramUser.telegram_id == message.from_user.id).first()
-        if not viewer:
-            await message.answer(MESSAGES['no_profile'])
-            return
+    async def handle():
+        with database_session() as db:
+            # Get current viewer
+            viewer = db.query(TelegramUser).filter(TelegramUser.telegram_id == message.from_user.id).first()
+            if not viewer:
+                await message.answer(MESSAGES['no_profile'])
+                return
 
-        # Get current profile being viewed
-        data = await state.get_data()
-        current_index = data.get('current_profile_index', -1)
-        
-        ranked_profiles = db.query(RankedProfiles).filter(
-            RankedProfiles.user_id == viewer.id
-        ).order_by(RankedProfiles.rank).all()
-        
-        if not ranked_profiles or current_index >= len(ranked_profiles):
-            await message.answer(MESSAGES['no_profiles'])
-            return
+            # Get current profile being viewed
+            data = await state.get_data()
+            current_index = data.get('current_profile_index', -1)
             
-        # Get the target profile and try to create like
-        target_profile = ranked_profiles[current_index].target_user
-        if not await create_like(db, viewer.id, target_profile.id):
-            await message.answer(MESSAGES['already_liked'])
-        
-        # Show next profile
-        await view_next_profile(message, state)
+            ranked_profiles = db.query(RankedProfiles).filter(
+                RankedProfiles.user_id == viewer.id
+            ).order_by(RankedProfiles.rank).all()
+            
+            if not ranked_profiles or current_index >= len(ranked_profiles):
+                await message.answer(MESSAGES['no_profiles'])
+                return
+                
+            # Get the target profile and try to create like
+            target_profile = ranked_profiles[current_index].target_user
+            if not await create_like(db, viewer.id, target_profile.id):
+                await message.answer(MESSAGES['already_liked'])
+            
+            # Show next profile
+            await view_next_profile(message, state)
+    
+    await rate_limit_handler(message, handle)
 
 @dp.message(F.text == "Смотреть анкеты")
 async def handle_view_profiles_button(message: types.Message, state: FSMContext):

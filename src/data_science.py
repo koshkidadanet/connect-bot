@@ -4,12 +4,15 @@ from sentence_transformers import SentenceTransformer
 from database import SessionLocal
 from models import TelegramUser, RankedProfiles
 import numpy as np
-from typing import List, Dict, Any
+from typing import List, Dict, Any, Optional
 import os
 import torch
+from concurrent.futures import ThreadPoolExecutor
+from functools import lru_cache
+from sklearn.metrics.pairwise import cosine_similarity
 
 class VectorStore:
-    def __init__(self, persist_directory: str = "chroma_db"):
+    def __init__(self, persist_directory: str = "chroma_db", batch_size: int = 32):
         self.persist_directory = persist_directory
         
         # Configure client settings
@@ -40,6 +43,40 @@ class VectorStore:
             metadata={"description": "User looking_for embeddings"}
         )
         print("Collections initialized successfully")
+        
+        self.batch_size = batch_size
+        self._embedding_cache = {}  # Simple in-memory cache
+        self.executor = ThreadPoolExecutor(max_workers=4)  # For parallel processing
+
+    @lru_cache(maxsize=1024)
+    def _get_embedding_cached(self, text: str) -> np.ndarray:
+        """Cached version of embedding generation"""
+        return np.array(self._get_embedding(text))
+
+    def _get_embeddings_batch(self, texts: List[str]) -> List[np.ndarray]:
+        """Generate embeddings in batches for better performance"""
+        # First check cache
+        embeddings = []
+        texts_to_encode = []
+        
+        for text in texts:
+            if text in self._embedding_cache:
+                embeddings.append(self._embedding_cache[text])
+            else:
+                texts_to_encode.append(text)
+        
+        if texts_to_encode:
+            # Generate embeddings in batches
+            for i in range(0, len(texts_to_encode), self.batch_size):
+                batch = texts_to_encode[i:i + self.batch_size]
+                batch_embeddings = self.model.encode(batch)
+                
+                # Update cache and add to results
+                for text, embedding in zip(batch, batch_embeddings):
+                    self._embedding_cache[text] = embedding
+                    embeddings.append(embedding)
+        
+        return embeddings
 
     def _get_embedding(self, text: str) -> List[float]:
         # Convert embedding to list and normalize
@@ -49,29 +86,24 @@ class VectorStore:
         """Update or create vector embeddings for a single user"""
         user_id = str(user.id)
         
-        # Generate embeddings
-        about_embedding = self._get_embedding(user.about_me)
-        looking_embedding = self._get_embedding(user.looking_for)
+        # Generate embeddings using cached version
+        about_embedding = self._get_embedding_cached(user.about_me)
+        looking_embedding = self._get_embedding_cached(user.looking_for)
         
-        # Update about_me collection
+        # Update collections with numpy arrays
         try:
             self.about_collection.upsert(
                 ids=[user_id],
-                embeddings=[about_embedding],
+                embeddings=[about_embedding.tolist()],
                 metadatas=[{"telegram_id": user.telegram_id}]
             )
-        except Exception as e:
-            print(f"Error updating about_me vectors: {e}")
-
-        # Update looking_for collection
-        try:
             self.looking_collection.upsert(
                 ids=[user_id],
-                embeddings=[looking_embedding],
+                embeddings=[looking_embedding.tolist()],
                 metadatas=[{"telegram_id": user.telegram_id}]
             )
         except Exception as e:
-            print(f"Error updating looking_for vectors: {e}")
+            print(f"Error updating vectors: {e}")
 
     def delete_user_vectors(self, user_id: str) -> None:
         """Delete vector embeddings for a user"""
@@ -106,7 +138,7 @@ class VectorStore:
             print(f"Error resetting collections: {e}")
 
     def _content_changed(self, user: TelegramUser, user_id: str) -> bool:
-        """Check if user's content has changed from what's stored in vectors"""
+        """Enhanced change detection with cached embeddings"""
         try:
             # Get current vectors
             about_results = self.about_collection.get(
@@ -118,52 +150,61 @@ class VectorStore:
                 include=["embeddings"]
             )
             
-            # Generate new embeddings
-            new_about_embedding = self._get_embedding(user.about_me)
-            new_looking_embedding = self._get_embedding(user.looking_for)
+            if not about_results["embeddings"] or not looking_results["embeddings"]:
+                return True
             
-            # Compare embeddings
-            return (not np.allclose(about_results["embeddings"][0], new_about_embedding) or
-                    not np.allclose(looking_results["embeddings"][0], new_looking_embedding))
+            # Use cached embeddings for comparison
+            new_about_embedding = self._get_embedding_cached(user.about_me)
+            new_looking_embedding = self._get_embedding_cached(user.looking_for)
+            
+            # Compare with cosine similarity
+            about_similarity = cosine_similarity(
+                new_about_embedding.reshape(1, -1),
+                np.array(about_results["embeddings"][0]).reshape(1, -1)
+            )[0][0]
+            
+            looking_similarity = cosine_similarity(
+                new_looking_embedding.reshape(1, -1),
+                np.array(looking_results["embeddings"][0]).reshape(1, -1)
+            )[0][0]
+            
+            # Consider changed if similarity is below threshold
+            return about_similarity < 0.999 or looking_similarity < 0.999
+            
         except Exception:
-            return True  # If we can't get current vectors, assume content changed
+            return True
 
     def sync_with_database(self) -> None:
-        """Synchronize vector store with the PostgreSQL database"""
+        """Enhanced synchronization with parallel processing"""
         db = SessionLocal()
         try:
-            # Get all users from database
+            # Get all users and existing IDs
             users = db.query(TelegramUser).all()
+            existing_ids = set(self.about_collection.get()["ids"])
             
-            # Get existing IDs in collections
-            existing_about_ids = set()
-            existing_looking_ids = set()
+            # Prepare batches for vector operations
+            to_update = []
+            to_delete = []
             
-            try:
-                about_ids = self.about_collection.get()["ids"]
-                looking_ids = self.looking_collection.get()["ids"]
-                existing_about_ids = set(about_ids)
-                existing_looking_ids = set(looking_ids)
-            except Exception:
-                pass  # Collections might be empty
-            
-            # Update or add vectors for each user
             for user in users:
                 user_id = str(user.id)
-                if (user_id not in existing_about_ids or 
-                    user_id not in existing_looking_ids or 
-                    self._content_changed(user, user_id)):
-                    self.update_user_vectors(user)
+                if user_id not in existing_ids or self._content_changed(user, user_id):
+                    to_update.append(user)
             
-            # Remove vectors for deleted users
-            current_user_ids = {str(user.id) for user in users}
-            about_to_delete = existing_about_ids - current_user_ids
-            looking_to_delete = existing_looking_ids - current_user_ids
+            # Find IDs to delete
+            current_ids = {str(user.id) for user in users}
+            to_delete = list(existing_ids - current_ids)
             
-            if about_to_delete:
-                self.about_collection.delete(ids=list(about_to_delete))
-            if looking_to_delete:
-                self.looking_collection.delete(ids=list(looking_to_delete))
+            # Parallel processing for updates
+            if to_update:
+                # Process updates in parallel
+                with ThreadPoolExecutor() as executor:
+                    list(executor.map(self.update_user_vectors, to_update))
+            
+            # Handle deletions
+            if to_delete:
+                self.about_collection.delete(ids=to_delete)
+                self.looking_collection.delete(ids=to_delete)
                 
         finally:
             db.close()
@@ -172,44 +213,54 @@ class VectorStore:
                             user: TelegramUser, 
                             n_results: int = 5,
                             about_weight: float = 0.5) -> List[int]:
-        """
-        Find similar profiles based on weighted combination of about_me and looking_for
-        Returns list of telegram_ids sorted by similarity
-        """
-        about_embedding = self._get_embedding(user.about_me)
-        looking_embedding = self._get_embedding(user.looking_for)
+        """Enhanced profile matching with explicit cosine similarity"""
+        # Generate query embeddings
+        about_embedding = self._get_embedding_cached(user.about_me)
+        looking_embedding = self._get_embedding_cached(user.looking_for)
         
         # Get results from both collections
-        about_results = self.about_collection.query(
-            query_embeddings=[about_embedding],
-            n_results=n_results * 2,  # Get more results for better filtering
-            include=["metadatas"]
-        )
+        about_results = self.about_collection.get(include=["embeddings", "metadatas"])
+        looking_results = self.looking_collection.get(include=["embeddings", "metadatas"])
         
-        looking_results = self.looking_collection.query(
-            query_embeddings=[looking_embedding],
-            n_results=n_results * 2,
-            include=["metadatas"]
-        )
+        if not about_results["embeddings"] or not looking_results["embeddings"]:
+            return []
         
-        # Combine and weight results
-        results_dict = {}
+        # Convert embeddings to numpy arrays
+        about_embeddings = [np.array(emb) for emb in about_results["embeddings"]]
+        looking_embeddings = [np.array(emb) for emb in looking_results["embeddings"]]
         
-        # Process about_me results
-        for idx, score in enumerate(about_results['distances'][0]):
-            telegram_id = about_results['metadatas'][0][idx]['telegram_id']
-            if telegram_id != user.telegram_id:  # Exclude the query user
-                results_dict[telegram_id] = score * about_weight
-                
-        # Process looking_for results
-        for idx, score in enumerate(looking_results['distances'][0]):
-            telegram_id = looking_results['metadatas'][0][idx]['telegram_id']
-            if telegram_id != user.telegram_id:  # Exclude the query user
-                results_dict[telegram_id] = results_dict.get(telegram_id, 0) + score * (1 - about_weight)
+        # Compute similarities
+        about_similarities = self._compute_similarity_scores(about_embedding, about_embeddings)
+        looking_similarities = self._compute_similarity_scores(looking_embedding, looking_embeddings)
         
-        # Sort by combined scores and return top n_results
-        sorted_results = sorted(results_dict.items(), key=lambda x: x[1])
-        return [tid for tid, _ in sorted_results[:n_results]]
+        # Combine scores with weights
+        combined_scores = about_weight * about_similarities + (1 - about_weight) * looking_similarities
+        
+        # Create mapping of indices to telegram_ids
+        telegram_ids = [meta["telegram_id"] for meta in about_results["metadatas"]]
+        
+        # Sort by combined scores and filter out the query user
+        scored_pairs = [
+            (score, tid) for score, tid in zip(combined_scores, telegram_ids)
+            if tid != user.telegram_id
+        ]
+        scored_pairs.sort(reverse=True)  # Sort by similarity (highest first)
+        
+        # Return top n telegram_ids
+        return [tid for _, tid in scored_pairs[:n_results]]
+
+    def _compute_similarity_scores(self, query_embedding: np.ndarray, target_embeddings: List[np.ndarray]) -> np.ndarray:
+        """Compute cosine similarity scores"""
+        if not target_embeddings:
+            return np.array([])
+        
+        # Reshape query embedding to 2D array
+        query_2d = query_embedding.reshape(1, -1)
+        target_2d = np.vstack(target_embeddings)
+        
+        # Compute cosine similarity
+        similarities = cosine_similarity(query_2d, target_2d)[0]
+        return similarities
 
     def inspect_collections(self) -> Dict[str, Any]:
         """Return a summary of the current state of ChromaDB collections"""
