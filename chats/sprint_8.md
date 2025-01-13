@@ -1,4 +1,14 @@
-# ConnectBot
+koshkidadanet: Обнови README.md, чтобы он был на русском языке и содержал инструкцию по запуску бота. То есть сначала нужно развернуть бд, потом сгенерировать тестовые профили, потом инициализировать chromadb и после этого можно запускать aiogram_bot.py. Сделай красивую и подробную инструкцию 
+
+GitHub Copilot: ### [README.md](file:///home/koshkidadanet/My%20Files/connect-bot/src/README.md)
+
+Обновляю README.md с подробной инструкцией по развертыванию и запуску бота на русском языке.
+
+````markdown
+# ConnectBot - Умный бот для знакомств
+
+## Обзор проекта
+ConnectBot - это Telegram бот для знакомств, использующий FastAPI, PostgreSQL и ChromaDB для умного подбора анкет. Бот автоматически ранжирует профили на основе их схожести, используя векторные эмбеддинги.
 
 ## Структура проекта
 ```
@@ -94,3 +104,7 @@ python src/generate_profiles/get_file_ids_bot.py
 1. Установите `drop_existing=True` в функции `manage_tables()` в `main.py`
 2. Запустите `main.py`
 3. Не забудьте снова создать тестовые профили
+````
+
+
+Made changes.
